@@ -46,9 +46,44 @@ In this case, it was neccesary to add the following data:
     - istio: true // Boolean - Red Hat Service Mesh integration
     - knative: true // Boolean - Red Hat Serverless integration
 
+
 ## Commands
+
+- Init a project with an API
 
 ```$bash
 operator-sdk init --domain acidonpe.com --repo github.com/acidonpe/jump-app-operator
 operator-sdk create api --group jumpapp --version v1alpha1 --kind App --resource --controller
+```
+
+- Reload objects
+
+```$bash
+make manifests
+make generate
+```
+
+## Test locally
+
+### Requirements
+
+First of all, it is required to have the following prerequisites installed:
+
+- oc client
+- An OCP cluster or Kubernetes cluster up and running
+
+### Process
+
+- Start operator
+
+```$bash
+oc login 
+make install run
+```
+
+- Create a specific resource in order to start working
+
+```$bash
+oc apply -f config/samples/jumpapp_v1alpha1_app.yaml
+oc get all
 ```

@@ -20,11 +20,17 @@ import (
 	"context"
 
 	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 
 	jumpappv1alpha1 "github.com/acidonpe/jump-app-operator/api/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // AppReconciler reconciles a App object
@@ -38,26 +44,91 @@ type AppReconciler struct {
 //+kubebuilder:rbac:groups=jumpapp.acidonpe.com,resources=apps/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=jumpapp.acidonpe.com,resources=apps/finalizers,verbs=update
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the App object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.7.2/pkg/reconcile
 func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = r.Log.WithValues("app", req.NamespacedName)
+	log := r.Log.WithValues("app", req.NamespacedName)
 
-	// your logic here
+	// Get Apps
+	app := &jumpappv1alpha1.App{}
+	err := r.Get(ctx, req.NamespacedName, app)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Split Microservices and iterate for each of them
+	jumpappItems := app.Spec.Microservices
+	for _, micro := range jumpappItems {
+		// Log micro name
+		log.V(0).Info(micro)
+
+		// Check if the deployment already exists, if not create a new deployment
+		found := &appsv1.Deployment{}
+		err = r.Get(ctx, types.NamespacedName{Name: micro, Namespace: app.Namespace}, found)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				// Define and create a new deployment.
+				dep := r.deploymentForJumpApp(micro, app)
+				if err = r.Create(ctx, dep); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{Requeue: true}, nil
+			} else {
+				return ctrl.Result{}, err
+			}
+		}
+	}
 
 	return ctrl.Result{}, nil
+}
+
+// deploymentForMemcached returns a Deployment object for data from m.
+func (r *AppReconciler) deploymentForJumpApp(n string, m *jumpappv1alpha1.App) *appsv1.Deployment {
+	lbls := labelsForApp(n)
+	replicas := m.Spec.Replicas
+
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      n,
+			Namespace: m.Namespace,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: lbls,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: lbls,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Image: "quay.io/acidonpe/service-mesh-envoy-and-istio-control-plane:latest",
+						Name:  n,
+						Ports: []corev1.ContainerPort{{
+							ContainerPort: 8080,
+							Protocol:      "TCP",
+						}},
+					}},
+				},
+			},
+		},
+	}
+
+	return dep
+}
+
+// labelsForApp creates a simple set of labels for Memcached.
+func labelsForApp(name string) map[string]string {
+	return map[string]string{"app": name, "name": name, "version": "v1"}
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&jumpappv1alpha1.App{}).
+		Owns(&appsv1.Deployment{}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: 2}).
 		Complete(r)
 }

@@ -22,11 +22,11 @@ import (
 
 // AppSpec defines the desired state of App
 type AppSpec struct {
-	Replicas int `json:"replicas"`
-	Environment string `json:"environment"`
+	Replicas      int32    `json:"replicas"`
+	Environment   string   `json:"environment"`
 	Microservices []string `json:"apps"`
-	Knative bool `json:"knative"`
-	ServiceMesh bool `json:"servicemesh"`
+	Knative       bool     `json:"knative"`
+	ServiceMesh   bool     `json:"servicemesh"`
 }
 
 // AppStatus defines the observed state of App

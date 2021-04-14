@@ -3,5 +3,10 @@ kind: App
 metadata:
   name: app-sample
 spec:
-  # Add fields here
-  foo: bar
+  replicas: 2
+  environment: development
+  apps:
+    - front-javascript
+    - back-golang
+  knative: false
+  servicemesh: false
