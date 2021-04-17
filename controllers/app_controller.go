@@ -59,6 +59,18 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
+	// Get OCP Domain
+	ocpConsoleRoute := &routev1.Route{}
+	err = r.Get(ctx, types.NamespacedName{Name: "console", Namespace: "openshift-console"}, ocpConsoleRoute)
+	var appsDomain string
+	if err == nil {
+		status := ocpConsoleRoute.Status.DeepCopy()
+		appsDomain = status.Ingress[0].RouterCanonicalHostname
+		log.V(0).Info("Openshift Domain -> " + appsDomain)
+	} else {
+		return ctrl.Result{}, err
+	}
+
 	// Split Microservices and iterate for each of them
 	jumpappItems := app.Spec.Microservices
 	for _, micro := range jumpappItems {
@@ -71,7 +83,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if err != nil {
 			if errors.IsNotFound(err) {
 				// Define and create a new deployment
-				dep := r.deploymentForJumpApp(micro, app)
+				dep := r.deploymentForJumpApp(micro, app, appsDomain)
 				if err = r.Create(ctx, dep); err != nil {
 					return ctrl.Result{}, err
 				}
@@ -129,7 +141,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 }
 
 // deploymentForJumpApp returns a Deployment object for data from micro and app
-func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App) *appsv1.Deployment {
+func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App, dom string) *appsv1.Deployment {
 
 	// Define labels
 	lbls := labelsForApp(micro.Name)
@@ -140,6 +152,15 @@ func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *j
 		replicas = micro.Replicas
 	} else {
 		replicas = app.Spec.Replicas
+	}
+
+	// Define envs
+	envVars := []corev1.EnvVar{}
+	if micro.Backend != "" {
+		envVar := &corev1.EnvVar{}
+		envVar.Name = "REACT_APP_BACK"
+		envVar.Value = "https://" + micro.Backend + "-" + app.Namespace + "." + dom + "/jump"
+		envVars = append(envVars, *envVar)
 	}
 
 	// Create deployment object
@@ -166,6 +187,7 @@ func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *j
 							ContainerPort: micro.PodPort,
 							Protocol:      "TCP",
 						}},
+						Env: envVars,
 					}},
 				},
 			},

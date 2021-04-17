@@ -11,6 +11,7 @@ spec:
       svcport: 8080
       image: quay.io/acidonpe/jump-app-front-javascript:latest 
       public: true
+      backend: back-golang
     - name: back-golang
       podport: 8442
       svcport: 8442

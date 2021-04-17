@@ -29,6 +29,7 @@ type Micro struct {
 	Replicas int32  `json:"replicas,omitempty"`
 	Knative  bool   `json:"knative,omitempty"`
 	Public   bool   `json:"public,omitempty"`
+	Backend  string `json:"backend,omitempty"`
 }
 
 // AppSpec defines the desired state of App

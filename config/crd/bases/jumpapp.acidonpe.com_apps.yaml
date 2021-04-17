@@ -40,6 +40,8 @@ spec:
                 items:
                   description: Micro struct
                   properties:
+                    backend:
+                      type: string
                     image:
                       type: string
                     knative:
