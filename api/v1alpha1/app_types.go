@@ -20,13 +20,24 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// Micro struct
+type Micro struct {
+	Name     string `json:"name"`
+	PodPort  int32  `json:"podport"`
+	SvcPort  int32  `json:"svcport"`
+	Image    string `json:"image"`
+	Replicas int32  `json:"replicas,omitempty"`
+	Knative  bool   `json:"knative,omitempty"`
+	Public   bool   `json:"public,omitempty"`
+}
+
 // AppSpec defines the desired state of App
 type AppSpec struct {
-	Replicas      int32    `json:"replicas"`
-	Environment   string   `json:"environment"`
-	Microservices []string `json:"apps"`
-	Knative       bool     `json:"knative"`
-	ServiceMesh   bool     `json:"servicemesh"`
+	Replicas      int32   `json:"replicas"`
+	Environment   string  `json:"environment"`
+	Microservices []Micro `json:"apps"`
+	Knative       bool    `json:"knative"`
+	ServiceMesh   bool    `json:"servicemesh"`
 }
 
 // AppStatus defines the observed state of App

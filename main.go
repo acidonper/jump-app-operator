@@ -33,7 +33,10 @@ import (
 
 	jumpappv1alpha1 "github.com/acidonpe/jump-app-operator/api/v1alpha1"
 	"github.com/acidonpe/jump-app-operator/controllers"
+
 	//+kubebuilder:scaffold:imports
+
+	routev1 "github.com/openshift/api/route/v1"
 )
 
 var (
@@ -46,6 +49,9 @@ func init() {
 
 	utilruntime.Must(jumpappv1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
+
+	// Added routev1 scheme
+	utilruntime.Must(routev1.AddToScheme(scheme))
 }
 
 func main() {

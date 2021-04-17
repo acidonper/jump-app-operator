@@ -38,7 +38,31 @@ spec:
             properties:
               apps:
                 items:
-                  type: string
+                  description: Micro struct
+                  properties:
+                    image:
+                      type: string
+                    knative:
+                      type: boolean
+                    name:
+                      type: string
+                    podport:
+                      format: int32
+                      type: integer
+                    public:
+                      type: boolean
+                    replicas:
+                      format: int32
+                      type: integer
+                    svcport:
+                      format: int32
+                      type: integer
+                  required:
+                  - image
+                  - name
+                  - podport
+                  - svcport
+                  type: object
                 type: array
               environment:
                 type: string

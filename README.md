@@ -85,5 +85,6 @@ make install run
 
 ```$bash
 oc apply -f config/samples/jumpapp_v1alpha1_app.yaml
+oc get app -o yaml
 oc get all
 ```

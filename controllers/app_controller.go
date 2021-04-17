@@ -18,16 +18,18 @@ package controllers
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
 
 	jumpappv1alpha1 "github.com/acidonpe/jump-app-operator/api/v1alpha1"
+	routev1 "github.com/openshift/api/route/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -61,21 +63,64 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	jumpappItems := app.Spec.Microservices
 	for _, micro := range jumpappItems {
 		// Log micro name
-		log.V(0).Info(micro)
+		log.V(0).Info("Processing microservice " + micro.Name)
 
 		// Check if the deployment already exists, if not create a new deployment
-		found := &appsv1.Deployment{}
-		err = r.Get(ctx, types.NamespacedName{Name: micro, Namespace: app.Namespace}, found)
+		foundDeployment := &appsv1.Deployment{}
+		err = r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, foundDeployment)
 		if err != nil {
 			if errors.IsNotFound(err) {
-				// Define and create a new deployment.
+				// Define and create a new deployment
 				dep := r.deploymentForJumpApp(micro, app)
 				if err = r.Create(ctx, dep); err != nil {
 					return ctrl.Result{}, err
 				}
+				log.V(0).Info("Deployment " + micro.Name + " created!")
 				return ctrl.Result{Requeue: true}, nil
 			} else {
 				return ctrl.Result{}, err
+			}
+		} else {
+			log.V(0).Info("Deployment " + micro.Name + " exists...")
+		}
+
+		// Check if the service already exists, if not create a new service
+		foundService := &corev1.Service{}
+		err = r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, foundService)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				// Define and create a new service
+				dep := r.serviceForJumpApp(micro, app)
+				if err = r.Create(ctx, dep); err != nil {
+					return ctrl.Result{}, err
+				}
+				log.V(0).Info("Service " + micro.Name + " created!")
+				return ctrl.Result{Requeue: true}, nil
+			} else {
+				return ctrl.Result{}, err
+			}
+		} else {
+			log.V(0).Info("Service " + micro.Name + " exists...")
+		}
+
+		if micro.Public == true {
+			// Check if the route already exists, if not create a new route
+			foundRoute := &routev1.Route{}
+			err = r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, foundRoute)
+			if err != nil {
+				if errors.IsNotFound(err) {
+					// Define and create a new route
+					dep := r.routeForJumpApp(micro, app)
+					if err = r.Create(ctx, dep); err != nil {
+						return ctrl.Result{}, err
+					}
+					log.V(0).Info("Route " + micro.Name + " created!")
+					return ctrl.Result{Requeue: true}, nil
+				} else {
+					return ctrl.Result{}, err
+				}
+			} else {
+				log.V(0).Info("Route " + micro.Name + " exists...")
 			}
 		}
 	}
@@ -83,15 +128,26 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, nil
 }
 
-// deploymentForMemcached returns a Deployment object for data from m.
-func (r *AppReconciler) deploymentForJumpApp(n string, m *jumpappv1alpha1.App) *appsv1.Deployment {
-	lbls := labelsForApp(n)
-	replicas := m.Spec.Replicas
+// deploymentForJumpApp returns a Deployment object for data from micro and app
+func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App) *appsv1.Deployment {
 
+	// Define labels
+	lbls := labelsForApp(micro.Name)
+
+	// Define the number or replicas (Global or particular value)
+	var replicas int32
+	if micro.Replicas != 0 {
+		replicas = micro.Replicas
+	} else {
+		replicas = app.Spec.Replicas
+	}
+
+	// Create deployment object
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      n,
-			Namespace: m.Namespace,
+			Name:      micro.Name,
+			Namespace: app.Namespace,
+			Labels:    lbls,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -104,10 +160,10 @@ func (r *AppReconciler) deploymentForJumpApp(n string, m *jumpappv1alpha1.App) *
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Image: "quay.io/acidonpe/service-mesh-envoy-and-istio-control-plane:latest",
-						Name:  n,
+						Image: micro.Image,
+						Name:  micro.Name,
 						Ports: []corev1.ContainerPort{{
-							ContainerPort: 8080,
+							ContainerPort: micro.PodPort,
 							Protocol:      "TCP",
 						}},
 					}},
@@ -119,6 +175,65 @@ func (r *AppReconciler) deploymentForJumpApp(n string, m *jumpappv1alpha1.App) *
 	return dep
 }
 
+// serviceForJumpApp returns a Service object for data from micro and app
+func (r *AppReconciler) serviceForJumpApp(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App) *corev1.Service {
+
+	// Define labels
+	lbls := labelsForApp(micro.Name)
+
+	// Create service object
+	srv := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      micro.Name,
+			Namespace: app.Namespace,
+			Labels:    lbls,
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "http-" + strconv.Itoa(int(micro.SvcPort)),
+					Port:       micro.SvcPort,
+					Protocol:   "TCP",
+					TargetPort: intstr.FromInt(int(micro.PodPort)),
+				},
+			},
+			Selector: lbls,
+		},
+	}
+
+	return srv
+}
+
+func (r *AppReconciler) routeForJumpApp(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App) *routev1.Route {
+
+	// Define labels
+	lbls := labelsForApp(micro.Name)
+
+	// Create route object
+	route := &routev1.Route{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      micro.Name,
+			Namespace: app.Namespace,
+			Labels:    lbls,
+		},
+		Spec: routev1.RouteSpec{
+			To: routev1.RouteTargetReference{
+				Kind: "Service",
+				Name: micro.Name,
+			},
+			Port: &routev1.RoutePort{
+				TargetPort: intstr.FromString("http-" + strconv.Itoa(int(micro.SvcPort))),
+			},
+			TLS: &routev1.TLSConfig{
+				Termination:                   routev1.TLSTerminationEdge,
+				InsecureEdgeTerminationPolicy: routev1.InsecureEdgeTerminationPolicyRedirect,
+			},
+		},
+	}
+
+	return route
+}
+
 // labelsForApp creates a simple set of labels for Memcached.
 func labelsForApp(name string) map[string]string {
 	return map[string]string{"app": name, "name": name, "version": "v1"}
@@ -128,7 +243,5 @@ func labelsForApp(name string) map[string]string {
 func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&jumpappv1alpha1.App{}).
-		Owns(&appsv1.Deployment{}).
-		WithOptions(controller.Options{MaxConcurrentReconciles: 2}).
 		Complete(r)
 }
