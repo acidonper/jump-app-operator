@@ -37,15 +37,10 @@ Once you have your operator scope defined, it is time to create a new Custom Res
 
 Operator-sdk command generates a generic, or scaffolding, API definition which is required as starting point. Once it is created, it is necessary to add some elements to the spec CRD definition in order to be able to use the required values during the operator implementation process.
 
-In this case, it was neccesary to add the following data:
+In this case, it was necessary to add the following data:
 
-- Spec:
-    - replicas: 2 // Number - The number of microservices replicas (1 by default)
-    - microservices: "react, golang" // List. - A set of microservices to be deployed
-    - environment: "development" // String - Logical environment for configuring the application
-    - istio: true // Boolean - Red Hat Service Mesh integration
-    - knative: true // Boolean - Red Hat Serverless integration
-
+- Visit [AppSpec struct](./api/v1alpha1/app_types.go) for more information about the CRD
+- CustomResource Example: [App example](./config/samples/jumpapp_v1alpha1_app.yaml)
 
 ## Commands
 
