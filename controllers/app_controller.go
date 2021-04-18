@@ -45,6 +45,9 @@ type AppReconciler struct {
 //+kubebuilder:rbac:groups=jumpapp.acidonpe.com,resources=apps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=jumpapp.acidonpe.com,resources=apps/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=jumpapp.acidonpe.com,resources=apps/finalizers,verbs=update
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("app", req.NamespacedName)
@@ -54,9 +57,44 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	err := r.Get(ctx, req.NamespacedName, app)
 	if err != nil {
 		if errors.IsNotFound(err) {
+			log.V(0).Info("Deleting App Components" + app.Name)
+			// Deployments
+			foundDeployments := &appsv1.DeploymentList{}
+			err = r.List(ctx, foundDeployments, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(app.Namespace))
+			if err == nil {
+				for _, dep := range foundDeployments.Items {
+					if err = r.Delete(ctx, &dep); err != nil {
+						return ctrl.Result{}, err
+					}
+					log.V(0).Info("Deployment " + dep.Name + " deleted!")
+				}
+			}
+			// Services
+			foundServices := &corev1.ServiceList{}
+			err = r.List(ctx, foundServices, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(app.Namespace))
+			if err == nil {
+				for _, srv := range foundServices.Items {
+					if err = r.Delete(ctx, &srv); err != nil {
+						return ctrl.Result{}, err
+					}
+					log.V(0).Info("Service " + srv.Name + " deleted!")
+				}
+			}
+			// Routes
+			foundRoutes := &routev1.RouteList{}
+			err = r.List(ctx, foundRoutes, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(app.Namespace))
+			if err == nil {
+				for _, route := range foundRoutes.Items {
+					if err = r.Delete(ctx, &route); err != nil {
+						return ctrl.Result{}, err
+					}
+					log.V(0).Info("Route " + route.Name + " deleted!")
+				}
+			}
 			return ctrl.Result{}, nil
+		} else {
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, err
 	}
 
 	// Get OCP Domain
@@ -88,7 +126,6 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 					return ctrl.Result{}, err
 				}
 				log.V(0).Info("Deployment " + micro.Name + " created!")
-				return ctrl.Result{Requeue: true}, nil
 			} else {
 				return ctrl.Result{}, err
 			}
@@ -107,7 +144,6 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 					return ctrl.Result{}, err
 				}
 				log.V(0).Info("Service " + micro.Name + " created!")
-				return ctrl.Result{Requeue: true}, nil
 			} else {
 				return ctrl.Result{}, err
 			}
@@ -127,7 +163,6 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 						return ctrl.Result{}, err
 					}
 					log.V(0).Info("Route " + micro.Name + " created!")
-					return ctrl.Result{Requeue: true}, nil
 				} else {
 					return ctrl.Result{}, err
 				}
@@ -258,7 +293,12 @@ func (r *AppReconciler) routeForJumpApp(micro jumpappv1alpha1.Micro, app *jumpap
 
 // labelsForApp creates a simple set of labels for Memcached.
 func labelsForApp(name string) map[string]string {
-	return map[string]string{"app": name, "name": name, "version": "v1"}
+	return map[string]string{
+		"app":             name,
+		"name":            name,
+		"version":         "v1",
+		"jumpapp-creator": "operator",
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
