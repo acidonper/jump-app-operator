@@ -50,7 +50,11 @@ type AppReconciler struct {
 //+kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	// Define logs and status variables
 	log := r.Log.WithValues("app", req.NamespacedName)
+	podsStatus := []string{}
+	svcsStatus := []string{}
+	routesStatus := []string{}
 
 	// Get Apps
 	app := &jumpappv1alpha1.App{}
@@ -117,60 +121,82 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 		// Check if the deployment already exists, if not create a new deployment
 		foundDeployment := &appsv1.Deployment{}
+		dep := r.deploymentForJumpApp(micro, app, appsDomain)
 		err = r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, foundDeployment)
 		if err != nil {
 			if errors.IsNotFound(err) {
 				// Define and create a new deployment
-				dep := r.deploymentForJumpApp(micro, app, appsDomain)
 				if err = r.Create(ctx, dep); err != nil {
+					podsStatus = append(podsStatus, micro.Name+" - ERROR")
 					return ctrl.Result{}, err
 				}
 				log.V(0).Info("Deployment " + micro.Name + " created!")
+				podsStatus = append(podsStatus, micro.Name+" - created!")
 			} else {
 				return ctrl.Result{}, err
 			}
 		} else {
 			log.V(0).Info("Deployment " + micro.Name + " exists...")
+			err = r.Update(ctx, dep)
+			log.V(0).Info("Deployment " + micro.Name + " updated!")
+			podsStatus = append(podsStatus, micro.Name+" - updated!")
 		}
 
 		// Check if the service already exists, if not create a new service
 		foundService := &corev1.Service{}
+		srv := r.serviceForJumpApp(micro, app)
 		err = r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, foundService)
 		if err != nil {
 			if errors.IsNotFound(err) {
 				// Define and create a new service
-				dep := r.serviceForJumpApp(micro, app)
-				if err = r.Create(ctx, dep); err != nil {
+				if err = r.Create(ctx, srv); err != nil {
+					svcsStatus = append(svcsStatus, micro.Name+" - ERROR")
 					return ctrl.Result{}, err
 				}
 				log.V(0).Info("Service " + micro.Name + " created!")
+				svcsStatus = append(svcsStatus, micro.Name+" - created!")
 			} else {
 				return ctrl.Result{}, err
 			}
 		} else {
 			log.V(0).Info("Service " + micro.Name + " exists...")
+			err = r.Update(ctx, srv)
+			log.V(0).Info("Service " + micro.Name + " updated!")
+			svcsStatus = append(svcsStatus, micro.Name+" - updated!")
 		}
 
 		if micro.Public == true {
 			// Check if the route already exists, if not create a new route
 			foundRoute := &routev1.Route{}
+			route := r.routeForJumpApp(micro, app)
 			err = r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, foundRoute)
 			if err != nil {
 				if errors.IsNotFound(err) {
 					// Define and create a new route
-					dep := r.routeForJumpApp(micro, app)
-					if err = r.Create(ctx, dep); err != nil {
+					if err = r.Create(ctx, route); err != nil {
+						routesStatus = append(routesStatus, micro.Name+" - ERROR")
 						return ctrl.Result{}, err
 					}
 					log.V(0).Info("Route " + micro.Name + " created!")
+					routesStatus = append(routesStatus, micro.Name+" - created!")
 				} else {
 					return ctrl.Result{}, err
 				}
 			} else {
 				log.V(0).Info("Route " + micro.Name + " exists...")
+				err = r.Update(ctx, route)
+				log.V(0).Info("Route " + micro.Name + " updated!")
+				routesStatus = append(routesStatus, micro.Name+" - updated!")
 			}
 		}
 	}
+
+	// Update App Status
+	log.V(0).Info("Updating App Status...")
+	app.Status.Pods = podsStatus
+	app.Status.Services = svcsStatus
+	app.Status.Routes = routesStatus
+	err = r.Status().Update(ctx, app)
 
 	return ctrl.Result{}, nil
 }
