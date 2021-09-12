@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"strconv"
+	"strings"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -61,41 +62,10 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	err := r.Get(ctx, req.NamespacedName, app)
 	if err != nil {
 		if errors.IsNotFound(err) {
+			// Delete App Components when App will be deleted
 			log.V(0).Info("Deleting App Components" + app.Name)
-			// Deployments
-			foundDeployments := &appsv1.DeploymentList{}
-			err = r.List(ctx, foundDeployments, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(app.Namespace))
-			if err == nil {
-				for _, dep := range foundDeployments.Items {
-					if err = r.Delete(ctx, &dep); err != nil {
-						return ctrl.Result{}, err
-					}
-					log.V(0).Info("Deployment " + dep.Name + " deleted!")
-				}
-			}
-			// Services
-			foundServices := &corev1.ServiceList{}
-			err = r.List(ctx, foundServices, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(app.Namespace))
-			if err == nil {
-				for _, srv := range foundServices.Items {
-					if err = r.Delete(ctx, &srv); err != nil {
-						return ctrl.Result{}, err
-					}
-					log.V(0).Info("Service " + srv.Name + " deleted!")
-				}
-			}
-			// Routes
-			foundRoutes := &routev1.RouteList{}
-			err = r.List(ctx, foundRoutes, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(app.Namespace))
-			if err == nil {
-				for _, route := range foundRoutes.Items {
-					if err = r.Delete(ctx, &route); err != nil {
-						return ctrl.Result{}, err
-					}
-					log.V(0).Info("Route " + route.Name + " deleted!")
-				}
-			}
-			return ctrl.Result{}, nil
+			c, e := r.destroyJumpApp(ctx, app.Namespace, log)
+			return c, e
 		} else {
 			return ctrl.Result{}, err
 		}
@@ -107,7 +77,9 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	var appsDomain string
 	if err == nil {
 		status := ocpConsoleRoute.Status.DeepCopy()
-		appsDomain = status.Ingress[0].RouterCanonicalHostname
+		routerDomain := status.Ingress[0].RouterCanonicalHostname
+		s := strings.Split(routerDomain, ".")
+		appsDomain = strings.Join(s[len(s)-5:], ".")
 		log.V(0).Info("Openshift Domain -> " + appsDomain)
 	} else {
 		return ctrl.Result{}, err
@@ -120,73 +92,25 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		log.V(0).Info("Processing microservice " + micro.Name)
 
 		// Check if the deployment already exists, if not create a new deployment
-		foundDeployment := &appsv1.Deployment{}
-		dep := r.deploymentForJumpApp(micro, app, appsDomain)
-		err = r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, foundDeployment)
-		if err != nil {
-			if errors.IsNotFound(err) {
-				// Define and create a new deployment
-				if err = r.Create(ctx, dep); err != nil {
-					podsStatus = append(podsStatus, micro.Name+" - ERROR")
-					return ctrl.Result{}, err
-				}
-				log.V(0).Info("Deployment " + micro.Name + " created!")
-				podsStatus = append(podsStatus, micro.Name+" - created!")
-			} else {
-				return ctrl.Result{}, err
-			}
-		} else {
-			log.V(0).Info("Deployment " + micro.Name + " exists...")
-			err = r.Update(ctx, dep)
-			log.V(0).Info("Deployment " + micro.Name + " updated!")
-			podsStatus = append(podsStatus, micro.Name+" - updated!")
+		c, e, podStatus := r.createJumpAppDeployment(ctx, app, appsDomain, micro, log)
+		podsStatus = append(podsStatus, podStatus)
+		if e != nil {
+			return c, e
 		}
 
 		// Check if the service already exists, if not create a new service
-		foundService := &corev1.Service{}
-		srv := r.serviceForJumpApp(micro, app)
-		err = r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, foundService)
-		if err != nil {
-			if errors.IsNotFound(err) {
-				// Define and create a new service
-				if err = r.Create(ctx, srv); err != nil {
-					svcsStatus = append(svcsStatus, micro.Name+" - ERROR")
-					return ctrl.Result{}, err
-				}
-				log.V(0).Info("Service " + micro.Name + " created!")
-				svcsStatus = append(svcsStatus, micro.Name+" - created!")
-			} else {
-				return ctrl.Result{}, err
-			}
-		} else {
-			log.V(0).Info("Service " + micro.Name + " exists...")
-			err = r.Update(ctx, srv)
-			log.V(0).Info("Service " + micro.Name + " updated!")
-			svcsStatus = append(svcsStatus, micro.Name+" - updated!")
+		c, e, svcStatus := r.createJumpAppService(ctx, app, appsDomain, micro, log)
+		svcsStatus = append(svcsStatus, svcStatus)
+		if e != nil {
+			return c, e
 		}
 
 		if micro.Public == true {
 			// Check if the route already exists, if not create a new route
-			foundRoute := &routev1.Route{}
-			route := r.routeForJumpApp(micro, app)
-			err = r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, foundRoute)
-			if err != nil {
-				if errors.IsNotFound(err) {
-					// Define and create a new route
-					if err = r.Create(ctx, route); err != nil {
-						routesStatus = append(routesStatus, micro.Name+" - ERROR")
-						return ctrl.Result{}, err
-					}
-					log.V(0).Info("Route " + micro.Name + " created!")
-					routesStatus = append(routesStatus, micro.Name+" - created!")
-				} else {
-					return ctrl.Result{}, err
-				}
-			} else {
-				log.V(0).Info("Route " + micro.Name + " exists...")
-				err = r.Update(ctx, route)
-				log.V(0).Info("Route " + micro.Name + " updated!")
-				routesStatus = append(routesStatus, micro.Name+" - updated!")
+			c, e, routeStatus := r.createJumpAppRoute(ctx, app, appsDomain, micro, log)
+			routesStatus = append(routesStatus, routeStatus)
+			if e != nil {
+				return c, e
 			}
 		}
 	}
@@ -199,6 +123,142 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	err = r.Status().Update(ctx, app)
 
 	return ctrl.Result{}, nil
+}
+
+func (r *AppReconciler) destroyJumpApp(ctx context.Context, ns string, log logr.Logger) (ctrl.Result, error) {
+	c, e := r.destroyJumpAppDeployments(ctx, ns, log)
+	if e != nil {
+		return c, e
+	}
+	c, e = r.destroyJumpAppServices(ctx, ns, log)
+	if e != nil {
+		return c, e
+	}
+	c, e = r.destroyJumpAppRoutes(ctx, ns, log)
+	if e != nil {
+		return c, e
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *AppReconciler) destroyJumpAppDeployments(ctx context.Context, ns string, log logr.Logger) (ctrl.Result, error) {
+	objs := &appsv1.DeploymentList{}
+	err := r.List(ctx, objs, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(ns))
+	if err == nil {
+		for _, dep := range objs.Items {
+			if err = r.Delete(ctx, &dep); err != nil {
+				return ctrl.Result{}, err
+			}
+			log.V(0).Info("Deployment " + dep.Name + " deleted!")
+		}
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *AppReconciler) destroyJumpAppServices(ctx context.Context, ns string, log logr.Logger) (ctrl.Result, error) {
+	objs := &corev1.ServiceList{}
+	err := r.List(ctx, objs, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(ns))
+	if err == nil {
+		for _, srv := range objs.Items {
+			if err = r.Delete(ctx, &srv); err != nil {
+				return ctrl.Result{}, err
+			}
+			log.V(0).Info("Service " + srv.Name + " deleted!")
+		}
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *AppReconciler) destroyJumpAppRoutes(ctx context.Context, ns string, log logr.Logger) (ctrl.Result, error) {
+	objs := &routev1.RouteList{}
+	err := r.List(ctx, objs, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(ns))
+	if err == nil {
+		for _, route := range objs.Items {
+			if err = r.Delete(ctx, &route); err != nil {
+				return ctrl.Result{}, err
+			}
+			log.V(0).Info("Route " + route.Name + " deleted!")
+		}
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *AppReconciler) createJumpAppDeployment(ctx context.Context, app *jumpappv1alpha1.App, domain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
+	findDeployment := &appsv1.Deployment{}
+	deployment := r.deploymentForJumpApp(micro, app, domain)
+	err := r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, findDeployment)
+	var podStatus string
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Define and create a new deployment
+			if err = r.Create(ctx, deployment); err != nil {
+				podStatus = micro.Name + " - ERROR"
+				return ctrl.Result{}, err, podStatus
+			}
+			log.V(0).Info("Deployment " + micro.Name + " created!")
+			podStatus = micro.Name + " - created!"
+		} else {
+			return ctrl.Result{}, err, podStatus
+		}
+	} else {
+		log.V(0).Info("Deployment " + micro.Name + " exists...")
+		err = r.Update(ctx, deployment)
+		log.V(0).Info("Deployment " + micro.Name + " updated!")
+		podStatus = micro.Name + " - updated!"
+	}
+	return ctrl.Result{}, nil, podStatus
+}
+
+func (r *AppReconciler) createJumpAppService(ctx context.Context, app *jumpappv1alpha1.App, domain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
+	findService := &corev1.Service{}
+	service := r.serviceForJumpApp(micro, app)
+	err := r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, findService)
+	var svcStatus string
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Define and create a new service
+			if err = r.Create(ctx, service); err != nil {
+				svcStatus = micro.Name + " - ERROR"
+				return ctrl.Result{}, err, svcStatus
+			}
+			log.V(0).Info("Service " + micro.Name + " created!")
+			svcStatus = micro.Name + " - created!"
+		} else {
+			return ctrl.Result{}, err, svcStatus
+		}
+	} else {
+		log.V(0).Info("Service " + micro.Name + " exists...")
+		err = r.Update(ctx, service)
+		log.V(0).Info("Service " + micro.Name + " updated!")
+		svcStatus = micro.Name + " - updated!"
+	}
+	return ctrl.Result{}, nil, svcStatus
+}
+
+func (r *AppReconciler) createJumpAppRoute(ctx context.Context, app *jumpappv1alpha1.App, domain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
+	findRoute := &routev1.Route{}
+	route := r.routeForJumpApp(micro, app)
+	var routeStatus string
+	err := r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, findRoute)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Define and create a new route
+			if err = r.Create(ctx, route); err != nil {
+				routeStatus = micro.Name + " - ERROR"
+				return ctrl.Result{}, err, routeStatus
+			}
+			log.V(0).Info("Route " + micro.Name + " created!")
+			routeStatus = micro.Name + " - created!"
+		} else {
+			return ctrl.Result{}, err, routeStatus
+		}
+	} else {
+		log.V(0).Info("Route " + micro.Name + " exists...")
+		err = r.Update(ctx, route)
+		log.V(0).Info("Route " + micro.Name + " updated!")
+		routeStatus = micro.Name + " - updated!"
+	}
+	return ctrl.Result{}, nil, routeStatus
 }
 
 // deploymentForJumpApp returns a Deployment object for data from micro and app
