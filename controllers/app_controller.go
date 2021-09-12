@@ -105,7 +105,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			return c, e
 		}
 
-		if micro.Public == true {
+		if micro.Public == true && app.Spec.ServiceMesh == false {
 			// Check if the route already exists, if not create a new route
 			c, e, routeStatus := r.createJumpAppRoute(ctx, app, appsDomain, micro, log)
 			routesStatus = append(routesStatus, routeStatus)
@@ -290,12 +290,21 @@ func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *j
 		}
 	}
 
+	// Define annotations
+	annotations := map[string]string{}
+	if app.Spec.ServiceMesh {
+		annotations = map[string]string{
+			"sidecar.istio.io/inject": "true",
+		}
+	}
+
 	// Create deployment object
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      micro.Name,
-			Namespace: app.Namespace,
-			Labels:    lbls,
+			Name:        micro.Name,
+			Namespace:   app.Namespace,
+			Labels:      lbls,
+			Annotations: annotations,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
