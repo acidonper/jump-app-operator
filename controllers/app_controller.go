@@ -282,6 +282,12 @@ func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *j
 		envVar.Name = "REACT_APP_BACK"
 		envVar.Value = "https://" + micro.Backend + "-" + app.Namespace + "." + dom + "/jump"
 		envVars = append(envVars, *envVar)
+		for _, appMicro := range app.Spec.Microservices {
+			name := strings.Split(appMicro.Name, "-")
+			envVar.Name = "REACT_APP_" + strings.ToUpper(name[1])
+			envVar.Value = "http://" + appMicro.Name + ":" + strconv.Itoa(int(appMicro.SvcPort))
+			envVars = append(envVars, *envVar)
+		}
 	}
 
 	// Create deployment object
