@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
+	"istio.io/client-go/pkg/apis/networking/v1alpha3"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,9 +32,11 @@ import (
 
 	jumpappv1alpha1 "github.com/acidonpe/jump-app-operator/api/v1alpha1"
 	routev1 "github.com/openshift/api/route/v1"
+	v1alpha3Spec "istio.io/api/networking/v1alpha3"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // AppReconciler reconciles a App object
@@ -56,6 +59,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	podsStatus := []string{}
 	svcsStatus := []string{}
 	routesStatus := []string{}
+	meshMicrosStatus := []string{}
 
 	// Get Apps
 	app := &jumpappv1alpha1.App{}
@@ -105,12 +109,23 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			return c, e
 		}
 
-		if micro.Public == true && app.Spec.ServiceMesh == false {
-			// Check if the route already exists, if not create a new route
-			c, e, routeStatus := r.createJumpAppRoute(ctx, app, appsDomain, micro, log)
-			routesStatus = append(routesStatus, routeStatus)
+		// Check if ServiceMesh is enabled
+		if app.Spec.ServiceMesh {
+			log.V(0).Info("Creating ServiceMesh objects")
+			c, e, meshMicroStatus := r.createJumpAppMicroMesh(ctx, app, appsDomain, micro, log)
+			meshMicrosStatus = append(meshMicrosStatus, meshMicroStatus)
 			if e != nil {
 				return c, e
+			}
+
+		} else {
+			if micro.Public == true {
+				// Check if the route already exists, if not create a new route
+				c, e, routeStatus := r.createJumpAppRoute(ctx, app, appsDomain, micro, log)
+				routesStatus = append(routesStatus, routeStatus)
+				if e != nil {
+					return c, e
+				}
 			}
 		}
 	}
@@ -120,6 +135,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	app.Status.Pods = podsStatus
 	app.Status.Services = svcsStatus
 	app.Status.Routes = routesStatus
+	app.Status.Mesh = meshMicrosStatus
 	err = r.Status().Update(ctx, app)
 
 	return ctrl.Result{}, nil
@@ -261,6 +277,48 @@ func (r *AppReconciler) createJumpAppRoute(ctx context.Context, app *jumpappv1al
 	return ctrl.Result{}, nil, routeStatus
 }
 
+func (r *AppReconciler) createJumpAppMicroMesh(ctx context.Context, app *jumpappv1alpha1.App, domain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
+	
+	meshMicroStatus := []string{}
+
+	// Check if the service already exists, if not create a new service
+	c, e, svStatus := r.createJumpAppMeshVS(ctx, app, domain, micro, log)
+	meshMicroStatus = append(meshMicroStatus, svStatus)
+	if e != nil {
+		return c, e, strings.Join(meshMicroStatus, " / ")
+	}
+
+	return c, nil, strings.Join(meshMicroStatus, " / ")
+}
+
+func (r *AppReconciler) createJumpAppMeshVS(ctx context.Context, app *jumpappv1alpha1.App, domain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
+	// Check if the VirtualService already exists, if not create a new VirtualService
+	findVS := &v1alpha3.VirtualService{}
+
+	vs := r.virtualServiceForJumpAppMesh(micro, app)
+	var vsStatus string
+	err := r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, findVS)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Define and create a new VirtualService
+			if err = r.Create(ctx, vs); err != nil {
+				vsStatus = micro.Name + " - ERROR"
+				return ctrl.Result{}, err, vsStatus
+			}
+			log.V(0).Info("Virtual Service " + micro.Name + " created!")
+			vsStatus = micro.Name + " - created!"
+		} else {
+			return ctrl.Result{}, err, vsStatus
+		}
+	} else {
+		log.V(0).Info("Virtual Service " + micro.Name + " exists...")
+		err = r.Update(ctx, vs)
+		log.V(0).Info("Virtual Service " + micro.Name + " updated!")
+		vsStatus = micro.Name + " - updated!"
+	}
+	return ctrl.Result{}, nil, vsStatus
+}
+
 // deploymentForJumpApp returns a Deployment object for data from micro and app
 func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App, dom string) *appsv1.Deployment {
 
@@ -390,6 +448,41 @@ func (r *AppReconciler) routeForJumpApp(micro jumpappv1alpha1.Micro, app *jumpap
 	}
 
 	return route
+}
+
+func (r *AppReconciler) virtualServiceForJumpAppMesh(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App) *v1alpha3.VirtualService {
+
+	// Define labels
+	lbls := labelsForApp(micro.Name)
+
+	// Create route object
+	vs := &v1alpha3.VirtualService{
+		ObjectMeta: v1.ObjectMeta {
+			Name:      micro.Name,
+			Namespace: app.Namespace,
+			Labels:    lbls,
+		},
+		Spec: v1alpha3Spec.VirtualService{
+			Gateways: []string{
+				"mesh",
+			},
+			Hosts: []string{
+				micro.Name,
+			},
+			Http: []*v1alpha3Spec.HTTPRoute{{
+				Name: "default",
+				Route: []*v1alpha3Spec.HTTPRouteDestination{{
+					Destination: &v1alpha3Spec.Destination{
+						Host: micro.Name,
+						Subset: "v1",
+					},
+					Weight: 100,
+				}},
+			}},
+		},
+	}
+
+	return vs
 }
 
 // labelsForApp creates a simple set of labels for Memcached.
