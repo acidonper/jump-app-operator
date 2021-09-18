@@ -79,7 +79,13 @@ make install run
 - Create a specific resource in order to start working
 
 ```$bash
+# Regular App
 oc apply -f config/samples/jumpapp_v1alpha1_app.yaml
+
+# Service Mesh App
+oc apply -f config/samples/jumpapp_v1alpha1_app_mesh.yaml
+
+# Test the application
 oc get app -o yaml
 oc get all
 ```

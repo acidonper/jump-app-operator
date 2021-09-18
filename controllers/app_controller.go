@@ -54,12 +54,13 @@ type AppReconciler struct {
 //+kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	// Define logs and status variables
+	// Define logs and required variables
 	log := r.Log.WithValues("app", req.NamespacedName)
 	podsStatus := []string{}
 	svcsStatus := []string{}
 	routesStatus := []string{}
 	meshMicrosStatus := []string{}
+	istioNS := "istio-system"
 
 	// Get Apps
 	app := &jumpappv1alpha1.App{}
@@ -92,42 +93,45 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// Split Microservices and iterate for each of them
 	jumpappItems := app.Spec.Microservices
 	for _, micro := range jumpappItems {
-		// Log micro name
 		log.V(0).Info("Processing microservice " + micro.Name)
 
-		// Check if the deployment already exists, if not create a new deployment
-		c, e, podStatus := r.createJumpAppDeployment(ctx, app, appsDomain, micro, log)
+		//Define public domain, mesh domain and url
+		meshDomain := istioNS + "." + appsDomain
+		regularDomain := app.Namespace + "." + appsDomain
+		publicMicroMeshDomain := micro.Name + "-" + meshDomain
+		urlPattern := regularDomain
+		if app.Spec.ServiceMesh {
+			urlPattern = meshDomain
+		}
+
+		//Create Microservice Objects
+		c, e, podStatus := r.createJumpAppDeployment(ctx, app, urlPattern, micro, log)
 		podsStatus = append(podsStatus, podStatus)
 		if e != nil {
 			return c, e
 		}
-
-		// Check if the service already exists, if not create a new service
-		c, e, svcStatus := r.createJumpAppService(ctx, app, appsDomain, micro, log)
+		c, e, svcStatus := r.createJumpAppService(ctx, app, micro, log)
 		svcsStatus = append(svcsStatus, svcStatus)
 		if e != nil {
 			return c, e
 		}
-
-		// Check if ServiceMesh is enabled
 		if app.Spec.ServiceMesh {
 			log.V(0).Info("Creating ServiceMesh objects")
-			c, e, meshMicroStatus := r.createJumpAppMicroMesh(ctx, app, appsDomain, micro, log)
+			c, e, meshMicroStatus := r.createJumpAppMicroMesh(ctx, app, publicMicroMeshDomain, micro, log)
 			meshMicrosStatus = append(meshMicrosStatus, meshMicroStatus)
 			if e != nil {
 				return c, e
 			}
 
-		} else {
-			if micro.Public == true {
-				// Check if the route already exists, if not create a new route
-				c, e, routeStatus := r.createJumpAppRoute(ctx, app, appsDomain, micro, log)
-				routesStatus = append(routesStatus, routeStatus)
-				if e != nil {
-					return c, e
-				}
+		}
+		if micro.Public == true {
+			c, e, routeStatus := r.createJumpAppRoute(ctx, app, istioNS, micro, log)
+			routesStatus = append(routesStatus, routeStatus)
+			if e != nil {
+				return c, e
 			}
 		}
+
 	}
 
 	// Update App Status
@@ -199,14 +203,13 @@ func (r *AppReconciler) destroyJumpAppRoutes(ctx context.Context, ns string, log
 	return ctrl.Result{}, nil
 }
 
-func (r *AppReconciler) createJumpAppDeployment(ctx context.Context, app *jumpappv1alpha1.App, domain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
+func (r *AppReconciler) createJumpAppDeployment(ctx context.Context, app *jumpappv1alpha1.App, urlPattern string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
 	findDeployment := &appsv1.Deployment{}
-	deployment := r.deploymentForJumpApp(micro, app, domain)
+	deployment := r.deploymentForJumpApp(micro, app, urlPattern)
 	err := r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, findDeployment)
 	var podStatus string
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// Define and create a new deployment
 			if err = r.Create(ctx, deployment); err != nil {
 				podStatus = micro.Name + " - ERROR"
 				return ctrl.Result{}, err, podStatus
@@ -225,14 +228,13 @@ func (r *AppReconciler) createJumpAppDeployment(ctx context.Context, app *jumpap
 	return ctrl.Result{}, nil, podStatus
 }
 
-func (r *AppReconciler) createJumpAppService(ctx context.Context, app *jumpappv1alpha1.App, domain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
+func (r *AppReconciler) createJumpAppService(ctx context.Context, app *jumpappv1alpha1.App, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
 	findService := &corev1.Service{}
 	service := r.serviceForJumpApp(micro, app)
 	err := r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, findService)
 	var svcStatus string
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// Define and create a new service
 			if err = r.Create(ctx, service); err != nil {
 				svcStatus = micro.Name + " - ERROR"
 				return ctrl.Result{}, err, svcStatus
@@ -251,14 +253,23 @@ func (r *AppReconciler) createJumpAppService(ctx context.Context, app *jumpappv1
 	return ctrl.Result{}, nil, svcStatus
 }
 
-func (r *AppReconciler) createJumpAppRoute(ctx context.Context, app *jumpappv1alpha1.App, domain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
+func (r *AppReconciler) createJumpAppRoute(ctx context.Context, app *jumpappv1alpha1.App, istioNS string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
 	findRoute := &routev1.Route{}
-	route := r.routeForJumpApp(micro, app)
+	route := &routev1.Route{}
+
+	// Define the namespace where the route has to be created
+	ns := app.Namespace
+	if app.Spec.ServiceMesh {
+		route = r.routeMeshForJumpApp(micro, app, istioNS)
+		ns = istioNS
+	} else {
+		route = r.routeForJumpApp(micro, app)
+	}
+
 	var routeStatus string
-	err := r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, findRoute)
+	err := r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: ns}, findRoute)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// Define and create a new route
 			if err = r.Create(ctx, route); err != nil {
 				routeStatus = micro.Name + " - ERROR"
 				return ctrl.Result{}, err, routeStatus
@@ -277,28 +288,22 @@ func (r *AppReconciler) createJumpAppRoute(ctx context.Context, app *jumpappv1al
 	return ctrl.Result{}, nil, routeStatus
 }
 
-func (r *AppReconciler) createJumpAppMicroMesh(ctx context.Context, app *jumpappv1alpha1.App, domain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
-	
+func (r *AppReconciler) createJumpAppMicroMesh(ctx context.Context, app *jumpappv1alpha1.App, publicMeshDomain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
+
 	meshMicroStatus := []string{}
-	publicDomain := micro.Name + "-istio-system." + domain
 
 	if micro.Public == true {
-		// Check if the Gateway already exists, if not create a new one
-		c, e, gwStatus := r.createJumpAppMeshGW(ctx, app, publicDomain, micro, log)
+		c, e, gwStatus := r.createJumpAppMeshGW(ctx, app, publicMeshDomain, micro, log)
 		meshMicroStatus = append(meshMicroStatus, gwStatus)
 		if e != nil {
 			return c, e, strings.Join(meshMicroStatus, " / ")
 		}
 	}
-
-	// Check if the virtual service already exists, if not create a new one
-	c, e, svStatus := r.createJumpAppMeshVS(ctx, app, publicDomain, micro, log)
+	c, e, svStatus := r.createJumpAppMeshVS(ctx, app, publicMeshDomain, micro, log)
 	meshMicroStatus = append(meshMicroStatus, svStatus)
 	if e != nil {
 		return c, e, strings.Join(meshMicroStatus, " / ")
 	}
-
-	// Check if the Destination Rule already exists, if not create a new one
 	c, e, drStatus := r.createJumpAppMeshDR(ctx, app, micro, log)
 	meshMicroStatus = append(meshMicroStatus, drStatus)
 	if e != nil {
@@ -308,16 +313,15 @@ func (r *AppReconciler) createJumpAppMicroMesh(ctx context.Context, app *jumpapp
 	return c, nil, strings.Join(meshMicroStatus, " / ")
 }
 
-func (r *AppReconciler) createJumpAppMeshGW(ctx context.Context, app *jumpappv1alpha1.App, publicDomain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
+func (r *AppReconciler) createJumpAppMeshGW(ctx context.Context, app *jumpappv1alpha1.App, publicMeshDomain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
 	// Check if the Gateway already exists, if not create a new one
 	findGW := &v1alpha3.Gateway{}
 
-	gw := r.GatewayForJumpAppMesh(micro, app, publicDomain)
+	gw := r.gatewayForJumpAppMesh(micro, app, publicMeshDomain)
 	var gwStatus string
 	err := r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, findGW)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// Define and create a new Gateway
 			if err = r.Create(ctx, gw); err != nil {
 				gwStatus = micro.Name + " - ERROR"
 				return ctrl.Result{}, err, gwStatus
@@ -336,16 +340,13 @@ func (r *AppReconciler) createJumpAppMeshGW(ctx context.Context, app *jumpappv1a
 	return ctrl.Result{}, nil, gwStatus
 }
 
-func (r *AppReconciler) createJumpAppMeshVS(ctx context.Context, app *jumpappv1alpha1.App, publicDomain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
-	// Check if the VirtualService already exists, if not create a new one
+func (r *AppReconciler) createJumpAppMeshVS(ctx context.Context, app *jumpappv1alpha1.App, publicMeshDomain string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
 	findVS := &v1alpha3.VirtualService{}
-
-	vs := r.virtualServiceForJumpAppMesh(micro, app, publicDomain)
+	vs := r.virtualServiceForJumpAppMesh(micro, app, publicMeshDomain)
 	var vsStatus string
 	err := r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, findVS)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// Define and create a new VirtualService
 			if err = r.Create(ctx, vs); err != nil {
 				vsStatus = micro.Name + " - ERROR"
 				return ctrl.Result{}, err, vsStatus
@@ -365,15 +366,12 @@ func (r *AppReconciler) createJumpAppMeshVS(ctx context.Context, app *jumpappv1a
 }
 
 func (r *AppReconciler) createJumpAppMeshDR(ctx context.Context, app *jumpappv1alpha1.App, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
-	// Check if the Destination Rule already exists, if not create a new one
 	findDR := &v1alpha3.DestinationRule{}
-
 	dr := r.destinationRuleForJumpAppMesh(micro, app)
 	var drStatus string
 	err := r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, findDR)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// Define and create a new Destination Rule
 			if err = r.Create(ctx, dr); err != nil {
 				drStatus = micro.Name + " - ERROR"
 				return ctrl.Result{}, err, drStatus
@@ -392,8 +390,7 @@ func (r *AppReconciler) createJumpAppMeshDR(ctx context.Context, app *jumpappv1a
 	return ctrl.Result{}, nil, drStatus
 }
 
-// deploymentForJumpApp returns a Deployment object for data from micro and app
-func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App, dom string) *appsv1.Deployment {
+func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App, urlPattern string) *appsv1.Deployment {
 
 	// Define labels
 	lbls := labelsForApp(micro.Name)
@@ -411,7 +408,7 @@ func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *j
 	if micro.Backend != "" {
 		envVar := &corev1.EnvVar{}
 		envVar.Name = "REACT_APP_BACK"
-		envVar.Value = "https://" + micro.Backend + "-" + app.Namespace + "." + dom + "/jump"
+		envVar.Value = "https://" + micro.Backend + "-" + urlPattern + "/jump"
 		envVars = append(envVars, *envVar)
 		for _, appMicro := range app.Spec.Microservices {
 			name := strings.Split(appMicro.Name, "-")
@@ -429,13 +426,12 @@ func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *j
 		}
 	}
 
-	// Create deployment object
+	// Define deployment object
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        micro.Name,
-			Namespace:   app.Namespace,
-			Labels:      lbls,
-			Annotations: annotations,
+			Name:      micro.Name,
+			Namespace: app.Namespace,
+			Labels:    lbls,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -444,7 +440,8 @@ func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *j
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: lbls,
+					Labels:      lbls,
+					Annotations: annotations,
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
@@ -470,7 +467,7 @@ func (r *AppReconciler) serviceForJumpApp(micro jumpappv1alpha1.Micro, app *jump
 	// Define labels
 	lbls := labelsForApp(micro.Name)
 
-	// Create service object
+	// Define service object
 	srv := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      micro.Name,
@@ -498,7 +495,7 @@ func (r *AppReconciler) routeForJumpApp(micro jumpappv1alpha1.Micro, app *jumpap
 	// Define labels
 	lbls := labelsForApp(micro.Name)
 
-	// Create route object
+	// Define route object
 	route := &routev1.Route{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      micro.Name,
@@ -523,14 +520,44 @@ func (r *AppReconciler) routeForJumpApp(micro jumpappv1alpha1.Micro, app *jumpap
 	return route
 }
 
-func (r *AppReconciler) GatewayForJumpAppMesh(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App, publicDomain string) *v1alpha3.Gateway {
+func (r *AppReconciler) routeMeshForJumpApp(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App, istioNS string) *routev1.Route {
 
 	// Define labels
 	lbls := labelsForApp(micro.Name)
 
-	// Create Gateway object
+	// Define route object
+	route := &routev1.Route{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      micro.Name,
+			Namespace: istioNS,
+			Labels:    lbls,
+		},
+		Spec: routev1.RouteSpec{
+			To: routev1.RouteTargetReference{
+				Kind: "Service",
+				Name: "istio-ingressgateway",
+			},
+			Port: &routev1.RoutePort{
+				TargetPort: intstr.FromString("http2"),
+			},
+			TLS: &routev1.TLSConfig{
+				Termination:                   routev1.TLSTerminationEdge,
+				InsecureEdgeTerminationPolicy: routev1.InsecureEdgeTerminationPolicyRedirect,
+			},
+		},
+	}
+
+	return route
+}
+
+func (r *AppReconciler) gatewayForJumpAppMesh(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App, publicMeshDomain string) *v1alpha3.Gateway {
+
+	// Define labels
+	lbls := labelsForApp(micro.Name)
+
+	// Define Gateway object
 	gw := &v1alpha3.Gateway{
-		ObjectMeta: v1.ObjectMeta {
+		ObjectMeta: v1.ObjectMeta{
 			Name:      micro.Name,
 			Namespace: app.Namespace,
 			Labels:    lbls,
@@ -541,12 +568,12 @@ func (r *AppReconciler) GatewayForJumpAppMesh(micro jumpappv1alpha1.Micro, app *
 			},
 			Servers: []*v1alpha3Spec.Server{{
 				Port: &v1alpha3Spec.Port{
-					Number: 80,
+					Number:   80,
 					Protocol: "HTTP",
-					Name: "http",
+					Name:     "http",
 				},
 				Hosts: []string{
-					publicDomain,
+					publicMeshDomain,
 				},
 			}},
 		},
@@ -555,37 +582,38 @@ func (r *AppReconciler) GatewayForJumpAppMesh(micro jumpappv1alpha1.Micro, app *
 	return gw
 }
 
-func (r *AppReconciler) virtualServiceForJumpAppMesh(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App, publicDomain string) *v1alpha3.VirtualService {
+func (r *AppReconciler) virtualServiceForJumpAppMesh(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App, publicMeshDomain string) *v1alpha3.VirtualService {
 
 	// Define labels
 	lbls := labelsForApp(micro.Name)
 
-	// Define hosts
-	hosts := []string {
+	// Define hosts and gateways to public services
+	hosts := []string{
 		micro.Name,
 	}
+	gateways := []string{
+		"mesh",
+	}
 	if micro.Public {
-		hosts = append(hosts, publicDomain)
+		hosts = append(hosts, publicMeshDomain)
+		gateways = append(gateways, micro.Name)
 	}
 
-
-	// Create Virtual Service object
+	// Define Virtual Service object
 	vs := &v1alpha3.VirtualService{
-		ObjectMeta: v1.ObjectMeta {
+		ObjectMeta: v1.ObjectMeta{
 			Name:      micro.Name,
 			Namespace: app.Namespace,
 			Labels:    lbls,
 		},
 		Spec: v1alpha3Spec.VirtualService{
-			Gateways: []string{
-				"mesh",
-			},
-			Hosts: hosts,
+			Gateways: gateways,
+			Hosts:    hosts,
 			Http: []*v1alpha3Spec.HTTPRoute{{
 				Name: "default",
 				Route: []*v1alpha3Spec.HTTPRouteDestination{{
 					Destination: &v1alpha3Spec.Destination{
-						Host: micro.Name,
+						Host:   micro.Name,
 						Subset: "v1",
 					},
 					Weight: 100,
@@ -602,9 +630,9 @@ func (r *AppReconciler) destinationRuleForJumpAppMesh(micro jumpappv1alpha1.Micr
 	// Define labels
 	lbls := labelsForApp(micro.Name)
 
-	// Create Destination Rule object
+	// Define Destination Rule object
 	dr := &v1alpha3.DestinationRule{
-		ObjectMeta: v1.ObjectMeta {
+		ObjectMeta: v1.ObjectMeta{
 			Name:      micro.Name,
 			Namespace: app.Namespace,
 			Labels:    lbls,
@@ -612,7 +640,7 @@ func (r *AppReconciler) destinationRuleForJumpAppMesh(micro jumpappv1alpha1.Micr
 		Spec: v1alpha3Spec.DestinationRule{
 			Host: micro.Name,
 			Subsets: []*v1alpha3Spec.Subset{{
-				Name: "v1",
+				Name:   "v1",
 				Labels: lbls,
 			}},
 		},
@@ -621,9 +649,6 @@ func (r *AppReconciler) destinationRuleForJumpAppMesh(micro jumpappv1alpha1.Micr
 	return dr
 }
 
-
-
-// labelsForApp creates a simple set of labels for Memcached.
 func labelsForApp(name string) map[string]string {
 	return map[string]string{
 		"app":             name,

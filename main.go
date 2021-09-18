@@ -37,6 +37,7 @@ import (
 	//+kubebuilder:scaffold:imports
 
 	routev1 "github.com/openshift/api/route/v1"
+	"istio.io/client-go/pkg/apis/networking/v1alpha3"
 )
 
 var (
@@ -52,6 +53,9 @@ func init() {
 
 	// Added routev1 scheme
 	utilruntime.Must(routev1.AddToScheme(scheme))
+
+	// Added v1alpha3 Istio scheme
+	utilruntime.Must(v1alpha3.AddToScheme(scheme))
 }
 
 func main() {
