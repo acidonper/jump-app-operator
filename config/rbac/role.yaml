@@ -57,6 +57,20 @@ rules:
   - patch
   - update
 - apiGroups:
+  - networking.istio.io
+  resources:
+  - destinationrule
+  - gateway
+  - virtualservice
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - route.openshift.io
   resources:
   - routes

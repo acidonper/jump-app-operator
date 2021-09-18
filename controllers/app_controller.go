@@ -52,6 +52,7 @@ type AppReconciler struct {
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="networking.istio.io",resources=destinationrule;virtualservice;gateway,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Define logs and required variables
