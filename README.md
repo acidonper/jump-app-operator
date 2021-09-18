@@ -83,9 +83,17 @@ make install run
 oc apply -f config/samples/jumpapp_v1alpha1_app.yaml
 
 # Service Mesh App
+## IMPORTANT - It is required to install Service Mesh and added the respective Namespace as ServiceMeshMember
 oc apply -f config/samples/jumpapp_v1alpha1_app_mesh.yaml
 
 # Test the application
 oc get app -o yaml
 oc get all
+```
+
+- Clean up
+
+```$bash
+# Delete App
+oc delete app app-sample
 ```
