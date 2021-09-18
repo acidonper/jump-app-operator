@@ -158,6 +158,18 @@ func (r *AppReconciler) destroyJumpApp(ctx context.Context, ns string, log logr.
 	if e != nil {
 		return c, e
 	}
+	c, e = r.destroyJumpAppMeshDR(ctx, ns, log)
+	if e != nil {
+		return c, e
+	}
+	c, e = r.destroyJumpAppMeshVS(ctx, ns, log)
+	if e != nil {
+		return c, e
+	}
+	c, e = r.destroyJumpAppMeshGW(ctx, ns, log)
+	if e != nil {
+		return c, e
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -198,6 +210,48 @@ func (r *AppReconciler) destroyJumpAppRoutes(ctx context.Context, ns string, log
 				return ctrl.Result{}, err
 			}
 			log.V(0).Info("Route " + route.Name + " deleted!")
+		}
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *AppReconciler) destroyJumpAppMeshDR(ctx context.Context, ns string, log logr.Logger) (ctrl.Result, error) {
+	objs := &v1alpha3.DestinationRuleList{}
+	err := r.List(ctx, objs, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(ns))
+	if err == nil {
+		for _, dep := range objs.Items {
+			if err = r.Delete(ctx, &dep); err != nil {
+				return ctrl.Result{}, err
+			}
+			log.V(0).Info("Destination Rule " + dep.Name + " deleted!")
+		}
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *AppReconciler) destroyJumpAppMeshVS(ctx context.Context, ns string, log logr.Logger) (ctrl.Result, error) {
+	objs := &v1alpha3.VirtualServiceList{}
+	err := r.List(ctx, objs, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(ns))
+	if err == nil {
+		for _, dep := range objs.Items {
+			if err = r.Delete(ctx, &dep); err != nil {
+				return ctrl.Result{}, err
+			}
+			log.V(0).Info("Virtual Service " + dep.Name + " deleted!")
+		}
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *AppReconciler) destroyJumpAppMeshGW(ctx context.Context, ns string, log logr.Logger) (ctrl.Result, error) {
+	objs := &v1alpha3.GatewayList{}
+	err := r.List(ctx, objs, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(ns))
+	if err == nil {
+		for _, dep := range objs.Items {
+			if err = r.Delete(ctx, &dep); err != nil {
+				return ctrl.Result{}, err
+			}
+			log.V(0).Info("Gateway " + dep.Name + " deleted!")
 		}
 	}
 	return ctrl.Result{}, nil
