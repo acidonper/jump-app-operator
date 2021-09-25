@@ -1,0 +1,35 @@
+apiVersion: jumpapp.acidonpe.com/v1alpha1
+kind: App
+metadata:
+  name: app-sample
+spec:
+  replicas: 2
+  environment: development
+  apps:
+    - name: front-javascript
+      podport: 3000
+      svcport: 8080
+      image: quay.io/acidonpe/jump-app-front-javascript:latest 
+      public: true
+      backend: back-golang
+    - name: back-golang
+      podport: 8442
+      svcport: 8442
+      image: quay.io/acidonpe/jump-app-back-golang:latest
+      public: true
+    - name: back-python
+      podport: 8080
+      svcport: 8444
+      image: quay.io/acidonpe/jump-app-back-python:latest 
+    - name: back-springboot
+      podport: 8443
+      svcport: 8443
+      image: quay.io/acidonpe/jump-app-back-springboot:latest
+    - name: back-quarkus
+      podport: 8080
+      svcport: 8445
+      replicas: 1
+      image: quay.io/acidonpe/jump-app-back-quarkus:latest 
+      knative: true
+  knative: true
+  servicemesh: true

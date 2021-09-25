@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	jumpappv1alpha1 "github.com/acidonpe/jump-app-operator/api/v1alpha1"
 	routev1 "github.com/openshift/api/route/v1"
@@ -37,6 +38,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	servingv1 "knative.dev/serving/pkg/apis/serving/v1"
 )
 
 // AppReconciler reconciles a App object
@@ -106,11 +108,19 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 
 		//Create Microservice Objects
-		c, e, podStatus := r.createJumpAppDeployment(ctx, app, urlPattern, micro, log)
+		var c reconcile.Result
+		var e error
+		var podStatus string
+		if micro.Knative && app.Spec.Knative{
+			c, e, podStatus = r.createJumpAppKnativeServing(ctx, app, urlPattern, micro, log)
+		} else {
+			c, e, podStatus = r.createJumpAppDeployment(ctx, app, urlPattern, micro, log)
+		}
 		podsStatus = append(podsStatus, podStatus)
 		if e != nil {
 			return c, e
 		}
+
 		c, e, svcStatus := r.createJumpAppService(ctx, app, micro, log)
 		svcsStatus = append(svcsStatus, svcStatus)
 		if e != nil {
@@ -168,6 +178,10 @@ func (r *AppReconciler) destroyJumpApp(ctx context.Context, ns string, log logr.
 		return c, e
 	}
 	c, e = r.destroyJumpAppMeshGW(ctx, ns, log)
+	if e != nil {
+		return c, e
+	}
+	c, e = r.destroyJumpAppKnativeServing(ctx, ns, log)
 	if e != nil {
 		return c, e
 	}
@@ -257,6 +271,21 @@ func (r *AppReconciler) destroyJumpAppMeshGW(ctx context.Context, ns string, log
 	}
 	return ctrl.Result{}, nil
 }
+
+func (r *AppReconciler) destroyJumpAppKnativeServing(ctx context.Context, ns string, log logr.Logger) (ctrl.Result, error) {
+	objs :=  &servingv1.ServiceList{}
+	err := r.List(ctx, objs, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(ns))
+	if err == nil {
+		for _, dep := range objs.Items {
+			if err = r.Delete(ctx, &dep); err != nil {
+				return ctrl.Result{}, err
+			}
+			log.V(0).Info("Knative Serving " + dep.Name + " deleted!")
+		}
+	}
+	return ctrl.Result{}, nil
+}
+
 
 func (r *AppReconciler) createJumpAppDeployment(ctx context.Context, app *jumpappv1alpha1.App, urlPattern string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
 	findDeployment := &appsv1.Deployment{}
@@ -443,6 +472,31 @@ func (r *AppReconciler) createJumpAppMeshDR(ctx context.Context, app *jumpappv1a
 		drStatus = micro.Name + " - updated!"
 	}
 	return ctrl.Result{}, nil, drStatus
+}
+
+func (r *AppReconciler) createJumpAppKnativeServing(ctx context.Context, app *jumpappv1alpha1.App, urlPattern string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
+	findKnativeServing := &servingv1.Service{}
+	serving := r.servingForJumpAppKnative(micro, app, urlPattern)
+	err := r.Get(ctx, types.NamespacedName{Name: micro.Name, Namespace: app.Namespace}, findKnativeServing)
+	var podStatus string
+	if err != nil {
+		if errors.IsNotFound(err) {
+			if err = r.Create(ctx, serving); err != nil {
+				podStatus = micro.Name + " - ERROR"
+				return ctrl.Result{}, err, podStatus
+			}
+			log.V(0).Info("Knative Serving " + micro.Name + " created!")
+			podStatus = micro.Name + " - created!"
+		} else {
+			return ctrl.Result{}, err, podStatus
+		}
+	} else {
+		log.V(0).Info("Knative Serving " + micro.Name + " exists...")
+		err = r.Update(ctx, serving)
+		log.V(0).Info("Knative Serving " + micro.Name + " updated!")
+		podStatus = micro.Name + " - updated!"
+	}
+	return ctrl.Result{}, nil, podStatus
 }
 
 func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App, urlPattern string) *appsv1.Deployment {
@@ -702,6 +756,76 @@ func (r *AppReconciler) destinationRuleForJumpAppMesh(micro jumpappv1alpha1.Micr
 	}
 
 	return dr
+}
+
+func (r *AppReconciler) servingForJumpAppKnative(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App, urlPattern string) *servingv1.Service {
+
+	// Define labels
+	lbls := labelsForApp(micro.Name)
+
+	// Define envs
+	envVars := []corev1.EnvVar{}
+	if micro.Backend != "" {
+		envVar := &corev1.EnvVar{}
+		envVar.Name = "REACT_APP_BACK"
+		envVar.Value = "https://" + micro.Backend + "-" + urlPattern + "/jump"
+		envVars = append(envVars, *envVar)
+		for _, appMicro := range app.Spec.Microservices {
+			name := strings.Split(appMicro.Name, "-")
+			envVar.Name = "REACT_APP_" + strings.ToUpper(name[1])
+			envVar.Value = "http://" + appMicro.Name + ":" + strconv.Itoa(int(appMicro.SvcPort))
+			envVars = append(envVars, *envVar)
+		}
+	}
+
+	// Define annotations
+	annotations := map[string]string{}
+	if app.Spec.ServiceMesh {
+		annotations = map[string]string{
+			"sidecar.istio.io/inject": "true",
+		}
+	}
+
+	// Helpers int64
+	timeout := int64(300)
+	concurrency := int64(0)
+
+	// Define Destination Rule object
+	service := &servingv1.Service{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      micro.Name,
+			Namespace: app.Namespace,
+			Labels:    lbls,
+			Annotations: annotations,
+		},
+		Spec: servingv1.ServiceSpec{
+			ConfigurationSpec: servingv1.ConfigurationSpec{
+				Template: servingv1.RevisionTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels:      lbls,
+						Annotations: annotations,
+					},
+					Spec: servingv1.RevisionSpec{
+						PodSpec: corev1.PodSpec{
+							Containers: []corev1.Container{{
+							Image: micro.Image,
+							Name:  micro.Name,
+							Ports: []corev1.ContainerPort{{
+								ContainerPort: micro.PodPort,
+								Protocol:      "TCP",
+							}},
+							Env: envVars,
+							}},
+						},
+						TimeoutSeconds: &timeout,
+						ContainerConcurrency: &concurrency,
+					},					
+				},
+			},
+		},
+	}
+
+	return service
 }
 
 func labelsForApp(name string) map[string]string {
