@@ -83,8 +83,12 @@ make install run
 oc apply -f config/samples/jumpapp_v1alpha1_app.yaml
 
 # Service Mesh App
-## IMPORTANT - It is required to install Service Mesh and added the respective Namespace as ServiceMeshMember
+## IMPORTANT - It is required to install Service Mesh Operators and add the respective Namespace as ServiceMeshMember
 oc apply -f config/samples/jumpapp_v1alpha1_app_mesh.yaml
+
+# Knative App
+## IMPORTANT - It is required to install Serverless Operator
+oc apply -f config/samples/jumpapp_v1alpha1_app_knative.yaml
 
 # Test the application
 oc get app -o yaml

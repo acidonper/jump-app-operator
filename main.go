@@ -38,6 +38,7 @@ import (
 
 	routev1 "github.com/openshift/api/route/v1"
 	"istio.io/client-go/pkg/apis/networking/v1alpha3"
+	servingv1 "knative.dev/serving/pkg/apis/serving/v1"
 )
 
 var (
@@ -56,6 +57,9 @@ func init() {
 
 	// Added v1alpha3 Istio scheme
 	utilruntime.Must(v1alpha3.AddToScheme(scheme))
+
+	// Added v1alpha3 Istio scheme
+	utilruntime.Must(servingv1.AddToScheme(scheme))
 }
 
 func main() {
