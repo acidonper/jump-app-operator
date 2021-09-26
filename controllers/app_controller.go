@@ -111,35 +111,40 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		var c reconcile.Result
 		var e error
 		var podStatus string
-		if micro.Knative && app.Spec.Knative{
+		if micro.Knative && app.Spec.Knative {
 			c, e, podStatus = r.createJumpAppKnativeServing(ctx, app, urlPattern, micro, log)
+			podsStatus = append(podsStatus, podStatus)
+			if e != nil {
+				return c, e
+			}
 		} else {
 			c, e, podStatus = r.createJumpAppDeployment(ctx, app, urlPattern, micro, log)
-		}
-		podsStatus = append(podsStatus, podStatus)
-		if e != nil {
-			return c, e
-		}
-
-		c, e, svcStatus := r.createJumpAppService(ctx, app, micro, log)
-		svcsStatus = append(svcsStatus, svcStatus)
-		if e != nil {
-			return c, e
-		}
-		if app.Spec.ServiceMesh {
-			log.V(0).Info("Creating ServiceMesh objects")
-			c, e, meshMicroStatus := r.createJumpAppMicroMesh(ctx, app, publicMicroMeshDomain, micro, log)
-			meshMicrosStatus = append(meshMicrosStatus, meshMicroStatus)
+			podsStatus = append(podsStatus, podStatus)
 			if e != nil {
 				return c, e
 			}
 
-		}
-		if micro.Public == true {
-			c, e, routeStatus := r.createJumpAppRoute(ctx, app, istioNS, micro, log)
-			routesStatus = append(routesStatus, routeStatus)
+			c, e, svcStatus := r.createJumpAppService(ctx, app, micro, log)
+			svcsStatus = append(svcsStatus, svcStatus)
 			if e != nil {
 				return c, e
+			}
+
+			if app.Spec.ServiceMesh {
+				log.V(0).Info("Creating ServiceMesh objects")
+				c, e, meshMicroStatus := r.createJumpAppMicroMesh(ctx, app, publicMicroMeshDomain, micro, log)
+				meshMicrosStatus = append(meshMicrosStatus, meshMicroStatus)
+				if e != nil {
+					return c, e
+				}
+			}
+
+			if micro.Public == true {
+				c, e, routeStatus := r.createJumpAppRoute(ctx, app, istioNS, micro, log)
+				routesStatus = append(routesStatus, routeStatus)
+				if e != nil {
+					return c, e
+				}
 			}
 		}
 
@@ -273,7 +278,7 @@ func (r *AppReconciler) destroyJumpAppMeshGW(ctx context.Context, ns string, log
 }
 
 func (r *AppReconciler) destroyJumpAppKnativeServing(ctx context.Context, ns string, log logr.Logger) (ctrl.Result, error) {
-	objs :=  &servingv1.ServiceList{}
+	objs := &servingv1.ServiceList{}
 	err := r.List(ctx, objs, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(ns))
 	if err == nil {
 		for _, dep := range objs.Items {
@@ -285,7 +290,6 @@ func (r *AppReconciler) destroyJumpAppKnativeServing(ctx context.Context, ns str
 	}
 	return ctrl.Result{}, nil
 }
-
 
 func (r *AppReconciler) createJumpAppDeployment(ctx context.Context, app *jumpappv1alpha1.App, urlPattern string, micro jumpappv1alpha1.Micro, log logr.Logger) (ctrl.Result, error, string) {
 	findDeployment := &appsv1.Deployment{}
@@ -522,7 +526,11 @@ func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *j
 		for _, appMicro := range app.Spec.Microservices {
 			name := strings.Split(appMicro.Name, "-")
 			envVar.Name = "REACT_APP_" + strings.ToUpper(name[1])
-			envVar.Value = "http://" + appMicro.Name + ":" + strconv.Itoa(int(appMicro.SvcPort))
+			if appMicro.Knative {
+				envVar.Value = "http://" + appMicro.Name + "." + app.Namespace + ".svc.cluster.local"
+			} else {
+				envVar.Value = "http://" + appMicro.Name + ":" + strconv.Itoa(int(appMicro.SvcPort))
+			}
 			envVars = append(envVars, *envVar)
 		}
 	}
@@ -762,6 +770,9 @@ func (r *AppReconciler) servingForJumpAppKnative(micro jumpappv1alpha1.Micro, ap
 
 	// Define labels
 	lbls := labelsForApp(micro.Name)
+	if !micro.Public {
+		lbls["networking.knative.dev/visibility"] = "cluster-local"
+	}
 
 	// Define envs
 	envVars := []corev1.EnvVar{}
@@ -793,9 +804,9 @@ func (r *AppReconciler) servingForJumpAppKnative(micro jumpappv1alpha1.Micro, ap
 	// Define Destination Rule object
 	service := &servingv1.Service{
 		ObjectMeta: v1.ObjectMeta{
-			Name:      micro.Name,
-			Namespace: app.Namespace,
-			Labels:    lbls,
+			Name:        micro.Name,
+			Namespace:   app.Namespace,
+			Labels:      lbls,
 			Annotations: annotations,
 		},
 		Spec: servingv1.ServiceSpec{
@@ -808,18 +819,18 @@ func (r *AppReconciler) servingForJumpAppKnative(micro jumpappv1alpha1.Micro, ap
 					Spec: servingv1.RevisionSpec{
 						PodSpec: corev1.PodSpec{
 							Containers: []corev1.Container{{
-							Image: micro.Image,
-							Name:  micro.Name,
-							Ports: []corev1.ContainerPort{{
-								ContainerPort: micro.PodPort,
-								Protocol:      "TCP",
-							}},
-							Env: envVars,
+								Image: micro.Image,
+								Name:  micro.Name,
+								Ports: []corev1.ContainerPort{{
+									ContainerPort: micro.PodPort,
+									Protocol:      "TCP",
+								}},
+								Env: envVars,
 							}},
 						},
-						TimeoutSeconds: &timeout,
+						TimeoutSeconds:       &timeout,
 						ContainerConcurrency: &concurrency,
-					},					
+					},
 				},
 			},
 		},

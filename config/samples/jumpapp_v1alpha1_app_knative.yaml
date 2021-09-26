@@ -27,9 +27,9 @@ spec:
       image: quay.io/acidonpe/jump-app-back-springboot:latest
     - name: back-quarkus
       podport: 8080
-      svcport: 8445
+      svcport: 80
       replicas: 1
       image: quay.io/acidonpe/jump-app-back-quarkus:latest 
       knative: true
   knative: true
-  servicemesh: true
+  servicemesh: false
