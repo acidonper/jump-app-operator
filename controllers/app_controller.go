@@ -36,6 +36,7 @@ import (
 	v1alpha3Spec "istio.io/api/networking/v1alpha3"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	netv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	servingv1 "knative.dev/serving/pkg/apis/serving/v1"
@@ -63,6 +64,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	svcsStatus := []string{}
 	routesStatus := []string{}
 	meshMicrosStatus := []string{}
+	knativeMicrosStatus := []string{}
 	istioNS := "istio-system"
 
 	// Get Apps
@@ -91,6 +93,14 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		log.V(0).Info("Openshift Domain -> " + appsDomain)
 	} else {
 		return ctrl.Result{}, err
+	}
+
+	if app.Spec.ServiceMesh && app.Spec.Knative {
+		c, e, knativeNPStatus := r.createJumpAppKnativeMeshNP(ctx, app, log)
+		knativeMicrosStatus = append(knativeMicrosStatus, knativeNPStatus)
+		if e != nil {
+			return c, e
+		}
 	}
 
 	// Split Microservices and iterate for each of them
@@ -147,7 +157,6 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 				}
 			}
 		}
-
 	}
 
 	// Update App Status
@@ -156,6 +165,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	app.Status.Services = svcsStatus
 	app.Status.Routes = routesStatus
 	app.Status.Mesh = meshMicrosStatus
+	app.Status.Knative = knativeMicrosStatus
 	err = r.Status().Update(ctx, app)
 
 	return ctrl.Result{}, nil
@@ -187,6 +197,10 @@ func (r *AppReconciler) destroyJumpApp(ctx context.Context, ns string, log logr.
 		return c, e
 	}
 	c, e = r.destroyJumpAppKnativeServing(ctx, ns, log)
+	if e != nil {
+		return c, e
+	}
+	c, e = r.destroyJumpAppKnativeMeshNP(ctx, ns, log)
 	if e != nil {
 		return c, e
 	}
@@ -286,6 +300,20 @@ func (r *AppReconciler) destroyJumpAppKnativeServing(ctx context.Context, ns str
 				return ctrl.Result{}, err
 			}
 			log.V(0).Info("Knative Serving " + dep.Name + " deleted!")
+		}
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *AppReconciler) destroyJumpAppKnativeMeshNP(ctx context.Context, ns string, log logr.Logger) (ctrl.Result, error) {
+	objs := &netv1.NetworkPolicyList{}
+	err := r.List(ctx, objs, client.MatchingLabels{"jumpapp-creator": "operator"}, client.InNamespace(ns))
+	if err == nil {
+		for _, dep := range objs.Items {
+			if err = r.Delete(ctx, &dep); err != nil {
+				return ctrl.Result{}, err
+			}
+			log.V(0).Info("Network Policy " + dep.Name + " deleted!")
 		}
 	}
 	return ctrl.Result{}, nil
@@ -415,7 +443,7 @@ func (r *AppReconciler) createJumpAppMeshGW(ctx context.Context, app *jumpappv1a
 				return ctrl.Result{}, err, gwStatus
 			}
 			log.V(0).Info("Gateway " + micro.Name + " created!")
-			gwStatus = micro.Name + " - created!"
+			gwStatus = "Gateway " + micro.Name + " - created!"
 		} else {
 			return ctrl.Result{}, err, gwStatus
 		}
@@ -423,7 +451,7 @@ func (r *AppReconciler) createJumpAppMeshGW(ctx context.Context, app *jumpappv1a
 		log.V(0).Info("Gateway " + micro.Name + " exists...")
 		err = r.Update(ctx, gw)
 		log.V(0).Info("Gateway " + micro.Name + " updated!")
-		gwStatus = micro.Name + " - updated!"
+		gwStatus = "Gateway " + micro.Name + " - updated!"
 	}
 	return ctrl.Result{}, nil, gwStatus
 }
@@ -440,7 +468,7 @@ func (r *AppReconciler) createJumpAppMeshVS(ctx context.Context, app *jumpappv1a
 				return ctrl.Result{}, err, vsStatus
 			}
 			log.V(0).Info("Virtual Service " + micro.Name + " created!")
-			vsStatus = micro.Name + " - created!"
+			vsStatus = "Virtual Service " + micro.Name + " - created!"
 		} else {
 			return ctrl.Result{}, err, vsStatus
 		}
@@ -448,7 +476,7 @@ func (r *AppReconciler) createJumpAppMeshVS(ctx context.Context, app *jumpappv1a
 		log.V(0).Info("Virtual Service " + micro.Name + " exists...")
 		err = r.Update(ctx, vs)
 		log.V(0).Info("Virtual Service " + micro.Name + " updated!")
-		vsStatus = micro.Name + " - updated!"
+		vsStatus = "Virtual Service " + micro.Name + " - updated!"
 	}
 	return ctrl.Result{}, nil, vsStatus
 }
@@ -465,7 +493,7 @@ func (r *AppReconciler) createJumpAppMeshDR(ctx context.Context, app *jumpappv1a
 				return ctrl.Result{}, err, drStatus
 			}
 			log.V(0).Info("Destination Rule " + micro.Name + " created!")
-			drStatus = micro.Name + " - created!"
+			drStatus = "Destination Rule " + micro.Name + " - created!"
 		} else {
 			return ctrl.Result{}, err, drStatus
 		}
@@ -473,7 +501,7 @@ func (r *AppReconciler) createJumpAppMeshDR(ctx context.Context, app *jumpappv1a
 		log.V(0).Info("Destination Rule " + micro.Name + " exists...")
 		err = r.Update(ctx, dr)
 		log.V(0).Info("Destination Rule " + micro.Name + " updated!")
-		drStatus = micro.Name + " - updated!"
+		drStatus = "Destination Rule " + micro.Name + " - updated!"
 	}
 	return ctrl.Result{}, nil, drStatus
 }
@@ -501,6 +529,32 @@ func (r *AppReconciler) createJumpAppKnativeServing(ctx context.Context, app *ju
 		podStatus = micro.Name + " - updated!"
 	}
 	return ctrl.Result{}, nil, podStatus
+}
+
+func (r *AppReconciler) createJumpAppKnativeMeshNP(ctx context.Context, app *jumpappv1alpha1.App, log logr.Logger) (ctrl.Result, error, string) {
+	findNetworkPolicy := &netv1.NetworkPolicy{}
+	npName := "allow-from-serving-system-namespace"
+	networkPolicy := r.networkPolicyForJumpApp(app, npName)
+	err := r.Get(ctx, types.NamespacedName{Name: npName, Namespace: app.Namespace}, findNetworkPolicy)
+	var npStatus string
+	if err != nil {
+		if errors.IsNotFound(err) {
+			if err = r.Create(ctx, networkPolicy); err != nil {
+				npStatus = "Creating Network Policy allow-from-serving-system-namespace - ERROR"
+				return ctrl.Result{}, err, npStatus
+			}
+			log.V(0).Info("Network Policy allow-from-serving-system-namespace created!")
+			npStatus = "Network Policy allow-from-serving-system-namespace created!"
+		} else {
+			return ctrl.Result{}, err, npStatus
+		}
+	} else {
+		log.V(0).Info("Network Policy allow-from-serving-system-namespace exists...")
+		err = r.Update(ctx, networkPolicy)
+		log.V(0).Info("Network Policy allow-from-serving-system-namespace updated!")
+		npStatus = "Network Policy allow-from-serving-system-namespace updated!"
+	}
+	return ctrl.Result{}, nil, npStatus
 }
 
 func (r *AppReconciler) deploymentForJumpApp(micro jumpappv1alpha1.Micro, app *jumpappv1alpha1.App, urlPattern string) *appsv1.Deployment {
@@ -837,6 +891,40 @@ func (r *AppReconciler) servingForJumpAppKnative(micro jumpappv1alpha1.Micro, ap
 	}
 
 	return service
+}
+
+func (r *AppReconciler) networkPolicyForJumpApp(app *jumpappv1alpha1.App, nsName string) *netv1.NetworkPolicy {
+
+	// Define labels
+	lbls := labelsForApp("NetworkPolicy")
+
+	selector := map[string]string{
+		"serving.knative.openshift.io/system-namespace": "true",
+	}
+
+	// Define Destination Rule object
+	networkPolicy := &netv1.NetworkPolicy{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      nsName,
+			Namespace: app.Namespace,
+			Labels:    lbls,
+		},
+		Spec: netv1.NetworkPolicySpec{
+			Ingress: []netv1.NetworkPolicyIngressRule{{
+				From: []netv1.NetworkPolicyPeer{{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: selector,
+					},
+				}},
+			}},
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []netv1.PolicyType{
+				netv1.PolicyTypeIngress,
+			},
+		},
+	}
+
+	return networkPolicy
 }
 
 func labelsForApp(name string) map[string]string {
