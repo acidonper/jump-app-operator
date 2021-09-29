@@ -85,6 +85,10 @@ spec:
           status:
             description: AppStatus defines the observed state of App
             properties:
+              knative:
+                items:
+                  type: string
+                type: array
               mesh:
                 items:
                   type: string

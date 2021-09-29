@@ -49,6 +49,7 @@ type AppStatus struct {
 	Services []string `json:"services,omitempty"`
 	Routes   []string `json:"routes,omitempty"`
 	Mesh     []string `json:"mesh,omitempty"`
+	Knative  []string `json:"knative,omitempty"`
 }
 
 //+kubebuilder:object:root=true
