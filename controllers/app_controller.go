@@ -166,7 +166,10 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	app.Status.Routes = routesStatus
 	app.Status.Mesh = meshMicrosStatus
 	app.Status.Knative = knativeMicrosStatus
-	err = r.Status().Update(ctx, app)
+	if err = r.Status().Update(ctx, app); err != nil {
+		log.Error(err, "Failed to update App status")
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
 }
@@ -337,7 +340,11 @@ func (r *AppReconciler) createJumpAppDeployment(ctx context.Context, app *jumpap
 		}
 	} else {
 		log.V(0).Info("Deployment " + micro.Name + " exists...")
-		err = r.Update(ctx, deployment)
+		if err = r.Update(ctx, deployment); err != nil {
+			podStatus = micro.Name + " - ERROR"
+			return ctrl.Result{}, err, podStatus
+		}
+
 		log.V(0).Info("Deployment " + micro.Name + " updated!")
 		podStatus = micro.Name + " - updated!"
 	}
@@ -362,7 +369,10 @@ func (r *AppReconciler) createJumpAppService(ctx context.Context, app *jumpappv1
 		}
 	} else {
 		log.V(0).Info("Service " + micro.Name + " exists...")
-		err = r.Update(ctx, service)
+		if err = r.Update(ctx, service); err != nil {
+			svcStatus = micro.Name + " - ERROR"
+			return ctrl.Result{}, err, svcStatus
+		}
 		log.V(0).Info("Service " + micro.Name + " updated!")
 		svcStatus = micro.Name + " - updated!"
 	}
@@ -397,7 +407,10 @@ func (r *AppReconciler) createJumpAppRoute(ctx context.Context, app *jumpappv1al
 		}
 	} else {
 		log.V(0).Info("Route " + micro.Name + " exists...")
-		err = r.Update(ctx, route)
+		if err = r.Update(ctx, route); err != nil {
+			routeStatus = micro.Name + " - ERROR"
+			return ctrl.Result{}, err, routeStatus
+		}
 		log.V(0).Info("Route " + micro.Name + " updated!")
 		routeStatus = micro.Name + " - updated!"
 	}
@@ -449,7 +462,10 @@ func (r *AppReconciler) createJumpAppMeshGW(ctx context.Context, app *jumpappv1a
 		}
 	} else {
 		log.V(0).Info("Gateway " + micro.Name + " exists...")
-		err = r.Update(ctx, gw)
+		if err = r.Update(ctx, gw); err != nil {
+			gwStatus = micro.Name + " - ERROR"
+			return ctrl.Result{}, err, gwStatus
+		}
 		log.V(0).Info("Gateway " + micro.Name + " updated!")
 		gwStatus = "Gateway " + micro.Name + " - updated!"
 	}
@@ -474,7 +490,10 @@ func (r *AppReconciler) createJumpAppMeshVS(ctx context.Context, app *jumpappv1a
 		}
 	} else {
 		log.V(0).Info("Virtual Service " + micro.Name + " exists...")
-		err = r.Update(ctx, vs)
+		if err = r.Update(ctx, vs); err != nil {
+			vsStatus = micro.Name + " - ERROR"
+			return ctrl.Result{}, err, vsStatus
+		}
 		log.V(0).Info("Virtual Service " + micro.Name + " updated!")
 		vsStatus = "Virtual Service " + micro.Name + " - updated!"
 	}
@@ -499,7 +518,10 @@ func (r *AppReconciler) createJumpAppMeshDR(ctx context.Context, app *jumpappv1a
 		}
 	} else {
 		log.V(0).Info("Destination Rule " + micro.Name + " exists...")
-		err = r.Update(ctx, dr)
+		if err = r.Update(ctx, dr); err != nil {
+			drStatus = micro.Name + " - ERROR"
+			return ctrl.Result{}, err, drStatus
+		}
 		log.V(0).Info("Destination Rule " + micro.Name + " updated!")
 		drStatus = "Destination Rule " + micro.Name + " - updated!"
 	}
@@ -524,7 +546,10 @@ func (r *AppReconciler) createJumpAppKnativeServing(ctx context.Context, app *ju
 		}
 	} else {
 		log.V(0).Info("Knative Serving " + micro.Name + " exists...")
-		err = r.Update(ctx, serving)
+		if err = r.Update(ctx, serving); err != nil {
+			podStatus = micro.Name + " - ERROR"
+			return ctrl.Result{}, err, podStatus
+		}
 		log.V(0).Info("Knative Serving " + micro.Name + " updated!")
 		podStatus = micro.Name + " - updated!"
 	}
@@ -550,7 +575,10 @@ func (r *AppReconciler) createJumpAppKnativeMeshNP(ctx context.Context, app *jum
 		}
 	} else {
 		log.V(0).Info("Network Policy allow-from-serving-system-namespace exists...")
-		err = r.Update(ctx, networkPolicy)
+		if err = r.Update(ctx, networkPolicy); err != nil {
+			npStatus = "Updating Network Policy allow-from-serving-system-namespace - ERROR"
+			return ctrl.Result{}, err, npStatus
+		}
 		log.V(0).Info("Network Policy allow-from-serving-system-namespace updated!")
 		npStatus = "Network Policy allow-from-serving-system-namespace updated!"
 	}
